@@ -25,6 +25,8 @@ from rich.table import Table
 # -m to create meeting notes for today
 # -f output format (json/csv etc)
 
+TEMP_DIR = './.temp_logs'
+
 LOG_TEMP =  {
     'id': '',
     'task': '',
@@ -38,7 +40,7 @@ LOG_TEMP =  {
 }
 
 TIME_FIELD_KEYS = ['created', 'updated', 'scheduled']
-STR_FIELD_KEYS = ['id', 'task', 'status', 'issue']
+STR_FIELD_KEYS = ['id', 'task', 'status', 'issue', 'note']
 INT_FIELD_KEYS = ['priority']
 READ_ONLY_KEYS = ['id', 'created', 'updated']
 EDITABLE_KEYS = ['task', 'priority', 'status', 'issue', 'scheduled', 'note']
@@ -67,6 +69,11 @@ def main():
     parser.add_argument('-o', '--output', default='table', help='Choose output format')
     args = parser.parse_args()
 
+    # if the temp directory is not present, create it
+    if not os.path.isdir(TEMP_DIR):
+        os.mkdir(TEMP_DIR)
+
+    # create sqlite connection
     conn = None
     db_file = './worklog.db'
     conn = create_connection()
@@ -83,6 +90,11 @@ def main():
             output=args.output if 'output' in args else None,
             verbose=args.verbose if 'verbose' in args else None,
             print=True,
+        )
+    if args.edit:
+        edit_log(
+            conn,
+            filter=args.filter if 'filter' in args else None,
         )
 
     conn.close()
@@ -230,7 +242,7 @@ def display_log(result, output_format, filter):
 
     elif output_format == 'vi':
         editor = os.environ.get('EDITOR', 'vim')
-        log_name = f'./tmp_logs/temp_display_{int(time.time())}'
+        log_name = f'{TEMP_DIR}/temp_display_{int(time.time())}'
 
         for idx,item in enumerate(result):
             for key in item:
@@ -252,71 +264,9 @@ def display_log(result, output_format, filter):
             print(e)
 
 
-def edit_log(conn, filter):
-    filter = parse_filter(filter)
-    result = get_log(conn, verbose=5)
-    fields = EDITABLE_KEYS.appedn('id')
-    if not result:
-        print('no log entry found.')
-        return
-    else:
-        editor = os.environ.get('EDITOR', 'vim')
-        log_name = f'./tmp_logs/tmp_edit_{int(time.time())}'
-        edit_content = []
-
-        for idx,item in enumerate(result):
-            for key in item:
-                if key.lower() not in fields:
-                    continue
-                if key.lower() in TIME_FIELD_KEYS:
-                    item[key] = datetime.fromtimestamp(item[key]).strftime('%Y-%m-%d %H:%M:%S')
-                edit_content.append(item[key])
-
-        with open(log_name, 'w+') as tmp:
-            template = copy.deepcopy(LOG_TEMP)
-            for item in edit_content:
-                tmp.write(yaml.dump([item], allow_unicode=True, sort_keys=False))
-                tmp.write('\n')
-            tmp.flush()
-            subprocess.call([editor, '-R', tmp.name])
-
-        with open(log_name, 'r') as tmp_r:
-            updated_log = tmp_r.read()
-
-        # the tmp log can be safely removed here
-        try: 
-            updated_entries = yaml.safe_load(updated_log)
-            os.remove(log_name)
-        except Exception as e:
-            print(e)
-
-        # updated log with new fields info, update the updated timestamp then update db
-        for entry in updated_entries:
-            update_command = 'UPDATE WORKLOG SET'
-            update_content = []
-            for k in EDITABLE_KEYS:
-                if key.lower() in TIME_FIELD_KEYS:
-                    entry[key] = datetime.fromtimestamp(entry[key]).strftime('%Y-%m-%d %H:%M:%S')
-                update_content.append(f' {k} = {entry[k]}')
-            update_command += f'WHERE id = {entry["id"]}'
-
-        try:
-            cur = conn.cursor()
-            sql_insert = 'INSERT INTO WORKLOG VALUES(?,?,?,?,?,?,?,?,?);'
-            cur.executemany(sql_insert, records)
-            conn.commit()
-        except sqlite3.Error as e:
-            print(e)
-            exit(1)
-        finally:
-            if cur:
-                cur.close()
-
-
-
 def add_log(conn):
     editor = os.environ.get('EDITOR', 'vim')
-    log_name = f'./tmp_logs/temp_add_{int(time.time())}.yaml'
+    log_name = f'{TEMP_DIR}/temp_add_{int(time.time())}.yaml'
     now = datetime.now()
     start_of_work_hour = datetime(
         year = now.year,
@@ -375,6 +325,79 @@ def add_log(conn):
     finally:
         if cur:
             cur.close()
+
+
+def edit_log(conn, **kwargs):
+    kwargs['verbose'] = 5
+    result = get_log(conn, **kwargs)
+    fields = EDITABLE_KEYS
+    fields.append('id')
+    if not result:
+        print('no log entry found.')
+        return
+    else:
+        editor = os.environ.get('EDITOR', 'vim')
+        log_name = f'{TEMP_DIR}/tmp_edit_{int(time.time())}'
+        edit_content = []
+
+        for idx,item in enumerate(result):
+            editable_content = {}
+            for key in item:
+                if key.lower() not in fields:
+                    continue
+                elif key.lower() in TIME_FIELD_KEYS:
+                    editable_content[key] = datetime.fromtimestamp(item[key]).strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    editable_content[key] = item[key]
+            edit_content.append(editable_content)
+
+        with open(log_name, 'w+') as tmp:
+            template = copy.deepcopy(LOG_TEMP)
+            for item in edit_content:
+                tmp.write(yaml.dump([item], allow_unicode=True, sort_keys=False))
+                tmp.write('\n')
+            tmp.flush()
+            subprocess.call([editor, tmp.name])
+
+        with open(log_name, 'r') as tmp_r:
+            updated_log = tmp_r.read()
+
+        # the tmp log can be safely removed here
+        try: 
+            updated_entries = yaml.safe_load(updated_log)
+            os.remove(log_name)
+        except Exception as e:
+            print(e)
+
+        # updated log with new fields info, update the updated timestamp then update db
+        update_content = []
+        for entry in updated_entries:
+            
+            update_fields = []
+            for k in EDITABLE_KEYS:
+                if k == 'id':
+                    continue
+                elif k in TIME_FIELD_KEYS:
+                    entry[k.upper()] = int(datetime.strptime(entry[k.upper()], '%Y-%m-%d %H:%M:%S').timestamp())
+                elif k in STR_FIELD_KEYS:
+                    entry[k.upper()] = "'" + entry[k.upper()] + "'"
+
+                update_fields.append(f' {k.upper()} = {entry[k.upper()]}')
+
+            sql_update = 'UPDATE WORKLOG SET ' + ','.join(update_fields) +  f" WHERE ID = '{entry['ID']}'"
+
+            try:
+                cur = conn.cursor()
+                cur.execute(sql_update)
+                conn.commit()
+                print(f'Updated {entry["ID"]}')
+            except sqlite3.Error as e:
+                #print(f'Failed to update {entry["ID"]}: {entry["TASK"]} with statement {sql_update} \n Error: {e}')
+                print(sql_update)
+                print(e)
+            finally:
+                if cur:
+                    cur.close()
 
 
 def parse_filter(filter):
