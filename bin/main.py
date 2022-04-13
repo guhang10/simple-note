@@ -41,14 +41,26 @@ TIME_FIELD_KEYS = ['created', 'updated', 'scheduled']
 STR_FIELD_KEYS = ['id', 'task', 'status', 'issue']
 INT_FIELD_KEYS = ['priority']
 READ_ONLY_KEYS = ['id', 'created', 'updated']
+EDITABLE_KEYS = ['task', 'priority', 'status', 'issue', 'scheduled', 'note']
 
 
 DEFAULT_FILTER = 'today'
+
+def str_presenter(dumper, data):
+    """configures yaml for dumping multiline strings
+    Ref: https://stackoverflow.com/questions/8640959/how-can-i-control-what-scalar-form-pyyaml-uses-for-my-data"""
+    if len(data.splitlines()) > 1:  # check for multiline string
+        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+
+yaml.add_representer(str, str_presenter)
+yaml.representer.SafeRepresenter.add_representer(str, str_presenter) # to use with safe_dum
 
 
 def main():
     parser = argparse.ArgumentParser(description='Note optons')
     parser.add_argument('-a', '--add', action='store_true', help='Add new note entries')
+    parser.add_argument('-e', '--edit', action='store_true', help='Edit existing note entries')
     parser.add_argument('-l', '--list', action='store_true', help='List note entries')
     parser.add_argument('-v', '--verbose', default=2, type=int, help='Verbose level')
     parser.add_argument('-f', '--filter', default='scheduled: range= start_of_today to now', help='Apply filter query')
@@ -180,8 +192,22 @@ def dict_factory(cursor, row):
 
 
 def display_log(result, output_format, filter):
+    if not result:
+        print('no log entry found.')
+        return
+
     if output_format == 'json':
         print(json.dumps(result))
+
+    if output_format == 'yaml':
+        print(yaml.dump(result, allow_unicode=True, sort_keys=False))
+
+    if output_format == 'csv':
+        output = []
+        output.append(','.join(result[0].keys()))
+        for item in result:
+            output.append(','.join([str(i) for i in item.values()]))
+        print('\n'.join(output))
 
     elif output_format == 'table': 
         table = Table(title=f'Tasks table filtered by {filter}')
@@ -204,7 +230,7 @@ def display_log(result, output_format, filter):
 
     elif output_format == 'vi':
         editor = os.environ.get('EDITOR', 'vim')
-        log_name = f'./tmp_logs/temp_{int(time.time())}'
+        log_name = f'./tmp_logs/temp_display_{int(time.time())}'
 
         for idx,item in enumerate(result):
             for key in item:
@@ -213,7 +239,9 @@ def display_log(result, output_format, filter):
 
         with open(log_name, 'w+') as tmp:
             template = copy.deepcopy(LOG_TEMP)
-            tmp.write(yaml.dump(result, allow_unicode=True))
+            for item in result:
+                tmp.write(yaml.dump([item], allow_unicode=True, sort_keys=False))
+                tmp.write('\n')
             tmp.flush()
             subprocess.call([editor, '-R', tmp.name])
 
@@ -224,9 +252,71 @@ def display_log(result, output_format, filter):
             print(e)
 
 
+def edit_log(conn, filter):
+    filter = parse_filter(filter)
+    result = get_log(conn, verbose=5)
+    fields = EDITABLE_KEYS.appedn('id')
+    if not result:
+        print('no log entry found.')
+        return
+    else:
+        editor = os.environ.get('EDITOR', 'vim')
+        log_name = f'./tmp_logs/tmp_edit_{int(time.time())}'
+        edit_content = []
+
+        for idx,item in enumerate(result):
+            for key in item:
+                if key.lower() not in fields:
+                    continue
+                if key.lower() in TIME_FIELD_KEYS:
+                    item[key] = datetime.fromtimestamp(item[key]).strftime('%Y-%m-%d %H:%M:%S')
+                edit_content.append(item[key])
+
+        with open(log_name, 'w+') as tmp:
+            template = copy.deepcopy(LOG_TEMP)
+            for item in edit_content:
+                tmp.write(yaml.dump([item], allow_unicode=True, sort_keys=False))
+                tmp.write('\n')
+            tmp.flush()
+            subprocess.call([editor, '-R', tmp.name])
+
+        with open(log_name, 'r') as tmp_r:
+            updated_log = tmp_r.read()
+
+        # the tmp log can be safely removed here
+        try: 
+            updated_entries = yaml.safe_load(updated_log)
+            os.remove(log_name)
+        except Exception as e:
+            print(e)
+
+        # updated log with new fields info, update the updated timestamp then update db
+        for entry in updated_entries:
+            update_command = 'UPDATE WORKLOG SET'
+            update_content = []
+            for k in EDITABLE_KEYS:
+                if key.lower() in TIME_FIELD_KEYS:
+                    entry[key] = datetime.fromtimestamp(entry[key]).strftime('%Y-%m-%d %H:%M:%S')
+                update_content.append(f' {k} = {entry[k]}')
+            update_command += f'WHERE id = {entry["id"]}'
+
+        try:
+            cur = conn.cursor()
+            sql_insert = 'INSERT INTO WORKLOG VALUES(?,?,?,?,?,?,?,?,?);'
+            cur.executemany(sql_insert, records)
+            conn.commit()
+        except sqlite3.Error as e:
+            print(e)
+            exit(1)
+        finally:
+            if cur:
+                cur.close()
+
+
+
 def add_log(conn):
     editor = os.environ.get('EDITOR', 'vim')
-    log_name = f'./tmp_logs/temp_{int(time.time())}'
+    log_name = f'./tmp_logs/temp_add_{int(time.time())}.yaml'
     now = datetime.now()
     start_of_work_hour = datetime(
         year = now.year,
@@ -241,7 +331,8 @@ def add_log(conn):
         template = copy.deepcopy(LOG_TEMP)
         [template.pop(k) for k in READ_ONLY_KEYS]
         template["scheduled"] = start_of_work_hour.strftime('%Y-%m-%d %H:%M:%S')
-        tmp.write(yaml.dump([template], allow_unicode=True))
+        text = yaml.dump([template], allow_unicode=True, sort_keys=False).replace('note: \'\'', 'note: |')
+        tmp.write(text)
         tmp.flush()
         subprocess.call([editor, tmp.name])
 
@@ -313,7 +404,7 @@ def parse_timefilter(query, **kwargs):
     }
     ts = {}
     # allow an overwrite of now for unit tests
-    if 'now' in kwargs and isinstance(kwargs['now'], datetime.datetime):
+    if 'now' in kwargs and isinstance(kwargs['now'], datetime):
         ts['now'] = kwargs['now']
     else:
         ts['now'] = datetime.now()
@@ -327,7 +418,7 @@ def parse_timefilter(query, **kwargs):
         minute = 0,
         second = 0,
     )
-    ts['end_of_today'] = ts['start_of_today'] + timedelta(hours=24)
+    ts['end_of_today'] = ts['start_of_today'] + timedelta(hours=23, minutes=59, seconds=59)
 
     ts['start_of_this_month'] = datetime(
         year = ts['now'].year,
@@ -338,18 +429,16 @@ def parse_timefilter(query, **kwargs):
         second = 0,
     )
 
-    ts['end_of_this_month'] = ts['start_of_this_month'] + timedelta(days=monthrange(ts['now'].year, ts['now'].month)[1])
-    ts['start_of_this_week'] = ts['end_of_today'] - timedelta(days=ts['end_of_today'].weekday())
-    ts['end_of_this_week'] = ts['start_of_this_week'] + timedelta(days=7)
+    ts['end_of_this_month'] = ts['start_of_this_month'] + timedelta(days=(monthrange(ts['now'].year, ts['now'].month)[1] - 1), hours=23, minutes=59, seconds=59)
+    ts['start_of_this_week'] = ts['start_of_today'] - timedelta(days=ts['end_of_today'].weekday())
+    ts['end_of_this_week'] = ts['start_of_this_week'] + timedelta(days=6, minutes=59, seconds = 59)
 
     # default range to from 1970-01-01 to now
     range = {'stat': 0, 'end': int(ts['now'].timestamp())}
 
     # regex match query to get start and end
-    query.strip()
-    m = re.search('(?<=range=).*', query)
-    query_content = str(m.group(0))
-    
+    query_content = re.sub('\s*range\s*=\s*', '', query).strip()
+
     query_range = {}
     (start, end) = query_content.split(' to ')
     query_range = {'start': start.strip(), 'end': end.strip()}
@@ -395,12 +484,17 @@ def parse_timefilter(query, **kwargs):
 
     return(query_range)
 
-def parse_timefilter_test():
-   print(parse_timefilter('range= now - 5h to now'))
-   print(parse_timefilter('range= start_of_today - 1d to now'))
-   print(parse_timefilter('range= start_of_this_week * 300m to start_of_today + 7n'))
-   pass
-
 
 if __name__ == '__main__':
     main()
+
+
+#
+# Unit testing
+#
+def test_parse_timefilter():
+   assert parse_timefilter('range= now - 5h to end_of_today', now=datetime(2022, 4, 7, 12, 30, 00)) == {'start': int(datetime(2022, 4, 7, 7, 30, 0).timestamp()), 'end': int(datetime(2022, 4, 7, 23, 59, 59).timestamp())}
+   assert parse_timefilter('range=start_of_today - 1d to end_of_this_month + 3m', now=datetime(2022, 4, 7, 12, 30, 00)) == {'start': int(datetime(2022, 4, 6, 0, 0, 0).timestamp()), 'end': int(datetime(2022, 5, 1, 0, 2, 59).timestamp())}
+   assert parse_timefilter('range =start_of_today - 1d to end_of_this_month + 3m', now=datetime(2022, 4, 7, 12, 30, 00)) == {'start': int(datetime(2022, 4, 6, 0, 0, 0).timestamp()), 'end': int(datetime(2022, 5, 1, 0, 2, 59).timestamp())}
+   assert parse_timefilter('range= start_of_this_week - 300m to start_of_today + 7s', now=datetime(2022, 4, 7, 12, 30, 00)) == {'start': int(datetime(2022, 4, 3, 19, 0, 0).timestamp()), 'end': int(datetime(2022, 4, 7, 0, 0, 7).timestamp())}
+
