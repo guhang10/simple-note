@@ -65,7 +65,7 @@ def main():
     parser.add_argument('-e', '--edit', action='store_true', help='Edit existing note entries')
     parser.add_argument('-l', '--list', action='store_true', help='List note entries')
     parser.add_argument('-v', '--verbose', default=2, type=int, help='Verbose level')
-    parser.add_argument('-f', '--filter', default='scheduled: range= start_of_today to now', help='Apply filter query')
+    parser.add_argument('-f', '--filter', help='Apply filter query')
     parser.add_argument('-o', '--output', default='table', help='Choose output format')
     args = parser.parse_args()
 
@@ -81,8 +81,22 @@ def main():
     # check if the worklog table exist 
     check_log_table(conn)
 
+    # default filter is scheduled today
+    # make a special case for standup meetings
+    # if no filter is applied, set the filter to last 2 days
+    # or if a Monday, last 4 days
+    # (this is a hacky way to do it)
+    if args.output == 'standup' and not args.filter:
+        if not datetime.now().weekday():
+          args.filter='scheduled: range= start_of_today - 3d to now'
+        else:
+          args.filter='scheduled: range= start_of_today - 1d to now'
+    elif not args.filter:
+        args.filter='scheduled: range= start_of_today to now'
+
     if args.add:
         add_log(conn)
+
     if args.list:
         get_log(
             conn,
@@ -91,6 +105,7 @@ def main():
             verbose=args.verbose if 'verbose' in args else None,
             print=True,
         )
+
     if args.edit:
         edit_log(
             conn,
@@ -208,13 +223,13 @@ def display_log(result, output_format, filter):
         print('no log entry found.')
         return
 
-    if output_format == 'json':
+    elif output_format == 'json':
         print(json.dumps(result))
 
-    if output_format == 'yaml':
+    elif output_format == 'yaml':
         print(yaml.dump(result, allow_unicode=True, sort_keys=False))
 
-    if output_format == 'csv':
+    elif output_format == 'csv':
         output = []
         output.append(','.join(result[0].keys()))
         for item in result:
@@ -262,6 +277,46 @@ def display_log(result, output_format, filter):
             os.remove(log_name)
         except Exception as e:
             print(e)
+
+    elif output_format == 'standup': 
+        entry_by_date = {}
+        for item in result:
+            row = []
+            date_key = None
+            for key in item:
+                if key.lower() == 'scheduled':
+                    s_date = datetime.fromtimestamp(item[key])
+                    date_key = s_date.strftime('%Y-%m-%d %A')
+                elif key.lower() in TIME_FIELD_KEYS:
+                    item[key] = datetime.fromtimestamp(item[key]).strftime('%Y-%m-%d %H:%M:%S')
+                    row.append(str(item[key]))
+                elif key.lower() == 'note' and len(item[key]) >= 10:
+                    item[key] = item[key][0:10] + '...'
+                    row.append(str(item[key]))
+                else:
+                    row.append(str(item[key]))
+
+            entry = ' | '.join(row)
+
+            if date_key:
+                if date_key not in entry_by_date:
+                    entry_by_date[date_key] = [entry]
+                else:
+                    entry_by_date[date_key].append(entry)
+
+        today = datetime.now().strftime("%Y-%m-%d %A")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %A")
+        print(f'## {datetime.now().strftime("%Y-%m-%d %A")}:')
+        new_line = '\n' # to get around f-string not allowing back slash
+        space = ' '
+        for key in entry_by_date:
+            if key == yesterday:
+                date_stamp = 'Yesterday'
+            elif key == today:
+                date_stamp = 'Today'
+            else:
+                date_stamp = key
+            print(f'{new_line}{space*4}{date_stamp}:{new_line}{space*8}{f"{new_line}{space*8}".join(entry_by_date[key])}')
 
 
 def add_log(conn):
@@ -338,7 +393,7 @@ def edit_log(conn, **kwargs):
     else:
         editor = os.environ.get('EDITOR', 'vim')
         log_name = f'{TEMP_DIR}/tmp_edit_{int(time.time())}'
-        edit_content = []
+        edit_entries = []
 
         for idx,item in enumerate(result):
             editable_content = {}
@@ -349,11 +404,11 @@ def edit_log(conn, **kwargs):
                     editable_content[key] = datetime.fromtimestamp(item[key]).strftime('%Y-%m-%d %H:%M:%S')
                 else:
                     editable_content[key] = item[key]
-            edit_content.append(editable_content)
+            edit_entries.append(editable_content)
 
         with open(log_name, 'w+') as tmp:
             template = copy.deepcopy(LOG_TEMP)
-            for item in edit_content:
+            for item in edit_entries:
                 tmp.write(yaml.dump([item], allow_unicode=True, sort_keys=False))
                 tmp.write('\n')
             tmp.flush()
@@ -364,16 +419,20 @@ def edit_log(conn, **kwargs):
 
         # the tmp log can be safely removed here
         try: 
-            updated_entries = yaml.safe_load(updated_log)
+            update_entries = yaml.safe_load(updated_log)
             os.remove(log_name)
         except Exception as e:
             print(e)
 
+        # check of modified log entries
+        modified_entries = []
+        for idx,entry in enumerate(update_entries):
+            if entry != edit_entries[idx] and entry['ID'] == edit_entries[idx]['ID']:
+                modified_entries.append(entry)
+
         # updated log with new fields info, update the updated timestamp then update db
-        update_content = []
-        for entry in updated_entries:
-            
-            update_fields = []
+        for entry in modified_entries:
+            update_fields = [f' UPDATED = {int(datetime.now().timestamp())}']
             for k in EDITABLE_KEYS:
                 if k == 'id':
                     continue
