@@ -25,8 +25,8 @@ from rich.table import Table
 # -m to create meeting notes for today
 # -f output format (json/csv etc)
 
-TEMP_DIR = './.temp_logs'
-DB_PATH = './.simple_note.db'
+TMP_DIR = '../.tmp_logs'
+DB_PATH = '../.simple_note.db'
 
 LOG_TEMP =  {
     'id': '',
@@ -70,9 +70,9 @@ def simple_note():
     parser.add_argument('-o', '--output', default='table', help='Choose output format')
     args = parser.parse_args()
 
-    # if the temp directory is not present, create it
-    if not os.path.isdir(TEMP_DIR):
-        os.mkdir(TEMP_DIR)
+    # if the tmp directory is not present, create it
+    if not os.path.isdir(TMP_DIR):
+        os.mkdir(TMP_DIR)
 
    
    
@@ -258,7 +258,7 @@ def display_log(result, output_format, filter):
 
     elif output_format == 'vi':
         editor = os.environ.get('EDITOR', 'vim')
-        log_name = f'{TEMP_DIR}/temp_display_{int(time.time())}'
+        log_name = f'{TMP_DIR}/tmp_display_{int(time.time())}'
 
         for idx,item in enumerate(result):
             for key in item:
@@ -322,7 +322,7 @@ def display_log(result, output_format, filter):
 
 def add_log(conn):
     editor = os.environ.get('EDITOR', 'vim')
-    log_name = f'{TEMP_DIR}/temp_add_{int(time.time())}.yaml'
+    log_name = f'{TMP_DIR}/tmp_add_{int(time.time())}.yaml'
     now = datetime.now()
     start_of_work_hour = datetime(
         year = now.year,
@@ -395,7 +395,7 @@ def edit_log(conn, **kwargs):
         return
     else:
         editor = os.environ.get('EDITOR', 'vim')
-        log_name = f'{TEMP_DIR}/tmp_edit_{int(time.time())}'
+        log_name = f'{TMP_DIR}/tmp_edit_{int(time.time())}'
         edit_entries = []
 
         for idx,item in enumerate(result):
