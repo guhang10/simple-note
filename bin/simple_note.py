@@ -26,6 +26,7 @@ from rich.table import Table
 # -f output format (json/csv etc)
 
 TEMP_DIR = './.temp_logs'
+DB_PATH = './.simple_note.db'
 
 LOG_TEMP =  {
     'id': '',
@@ -73,9 +74,9 @@ def simple_note():
     if not os.path.isdir(TEMP_DIR):
         os.mkdir(TEMP_DIR)
 
-    # create sqlite connection
-    conn = None
-    db_file = './worklog.db'
+   
+   
+   
     conn = create_connection()
 
     # check if the worklog table exist 
@@ -119,7 +120,7 @@ def create_connection():
     conn = None
     # conn to sqlite3 db
     try:
-      conn = sqlite3.connect('worklog.db')
+      conn = sqlite3.connect(DB_PATH)
       return conn
     except sqlite3.Error as e:
         print(e)
@@ -359,6 +360,8 @@ def add_log(conn):
         entry['id'] = str(uuid.uuid4())[:32]
         entry['created'] = int(time.time())
         entry['updated'] = int(time.time())
+        # strip trailing new lines
+        entry['note'] = entry['note'].rstrip()
         try:
             entry['scheduled'] = int(datetime.strptime(entry['scheduled'], '%Y-%m-%d %H:%M:%S').timestamp())
         except Exception as e:
@@ -460,20 +463,25 @@ def edit_log(conn, **kwargs):
 
 
 def parse_filter(filter):
-    filter_field = re.search('.*(?=\:)', filter).group(0).strip()
-    filter_query = re.search('(?<=\:).*', filter).group(0).strip()
+    statement = 'WHERE '
+    sections = filter.split(';')
+    filters = []
+
+    for section in sections:
+        filter_field = re.search('.*(?=\:)', section).group(0).strip()
+        filter_query = re.search('(?<=\:).*', section).group(0).strip()
  
-    if filter_field.lower() in LOG_TEMP.keys():
-        if 'range' in filter_query:
-            # add timefilter query
-            range = parse_timefilter(filter_query)
-            filter = f"WHERE {filter_field.upper()}  BETWEEN {range['start']} AND {range['end']}"
+        if filter_field.lower() in LOG_TEMP.keys():
+            if 'range' in filter_query:
+                # add timefilter query
+                range = parse_timefilter(filter_query)
+                filters.append(f"{filter_field.upper()}  BETWEEN {range['start']} AND {range['end']}")
+            elif '~' in filter_query:
+                filters.append(f'{filter_field.upper()} {parse_regexfilter(filter_query)}')
         else:
-            # TODO add text filter query
-            pass
-        return filter
-    else:
-        print(f'{filter_field} is not a valid field to apply filter, apply default')
+            print(f'Skipped {filter_field}, not a valid field to apply filter.')
+    statement += ' AND '.join(filters)
+    return statement
 
 
 def parse_timefilter(query, **kwargs):
@@ -565,6 +573,10 @@ def parse_timefilter(query, **kwargs):
         exit(1)
 
     return(query_range)
+
+def parse_regexfilter(query, **kwargs):
+    query_content = re.sub('\s*~\s*', '', query).strip()
+    return f"LIKE '{query_content}'"
 
 
 if __name__ == '__main__':
