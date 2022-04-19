@@ -25,8 +25,10 @@ from rich.table import Table
 # -m to create meeting notes for today
 # -f output format (json/csv etc)
 
-TMP_DIR = '../.tmp_logs'
-DB_PATH = '../.simple_note.db'
+BIN_DIR = os.path.dirname(__file__)
+
+TMP_DIR = os.path.join(BIN_DIR, '../.tmp_logs')
+DB_PATH = os.path.join(BIN_DIR, '../.simple_note.db')
 
 LOG_TEMP =  {
     'id': '',
@@ -63,6 +65,7 @@ yaml.representer.SafeRepresenter.add_representer(str, str_presenter) # to use wi
 def simple_note():
     parser = argparse.ArgumentParser(description='Note optons')
     parser.add_argument('-a', '--add', action='store_true', help='Add new note entries')
+    parser.add_argument('-d', '--delete', default=None, help='Specify the log id to be deleted')
     parser.add_argument('-e', '--edit', action='store_true', help='Edit existing note entries')
     parser.add_argument('-l', '--list', action='store_true', help='List note entries')
     parser.add_argument('-v', '--verbose', default=2, type=int, help='Verbose level')
@@ -74,9 +77,6 @@ def simple_note():
     if not os.path.isdir(TMP_DIR):
         os.mkdir(TMP_DIR)
 
-   
-   
-   
     conn = create_connection()
 
     # check if the worklog table exist 
@@ -97,6 +97,9 @@ def simple_note():
 
     if args.add:
         add_log(conn)
+
+    if args.delete:
+        delete_log(args.delete, conn)
 
     if args.list:
         get_log(
@@ -377,6 +380,26 @@ def add_log(conn):
         sql_insert = 'INSERT INTO WORKLOG VALUES(?,?,?,?,?,?,?,?,?);'
         cur.executemany(sql_insert, records)
         conn.commit()
+    except sqlite3.Error as e:
+        print(e)
+        exit(1)
+    finally:
+        if cur:
+            cur.close()
+            
+
+def delete_log(id, conn):
+    # test for id length
+    if len(id) != 32:
+        print("Given log id {id} isn't the correct format")
+        exit(1)
+
+    cur = conn.cursor()
+    sql_delete = f"DELETE FROM WORKLOG WHERE ID = '{id}'"
+    try:
+        cur.execute(sql_delete)
+        conn.commit()
+        print(f'Successfully deleted log id: {id}')
     except sqlite3.Error as e:
         print(e)
         exit(1)
