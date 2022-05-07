@@ -49,8 +49,6 @@ READ_ONLY_KEYS = ['id', 'created', 'updated']
 EDITABLE_KEYS = ['task', 'priority', 'status', 'issue', 'scheduled', 'note']
 
 
-DEFAULT_FILTER = 'today'
-
 def str_presenter(dumper, data):
     """configures yaml for dumping multiline strings
     Ref: https://stackoverflow.com/questions/8640959/how-can-i-control-what-scalar-form-pyyaml-uses-for-my-data"""
@@ -93,7 +91,7 @@ def simple_note():
         else:
           args.filter='scheduled: range= start_of_today - 1d to now'
     elif not args.filter:
-        args.filter='scheduled: range= start_of_today to now'
+        args.filter='scheduled: range= start_of_today to end_of_today'
 
     if args.add:
         add_log(conn)
