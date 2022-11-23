@@ -12,10 +12,10 @@ import yaml
 import uuid
 import re
 from rich.console import Console
-from rich.table import Table 
+from rich.table import Table
 
 # log sql table schema
-# | task | priority | status | issue | note | created | updated | scheduled
+# | id | task | context | application | priority | status | issue | note | created | updated | scheduled
 
 # options
 # -a to add entries
@@ -33,6 +33,8 @@ DB_PATH = os.path.join(BIN_DIR, '../.simple_note.db')
 LOG_TEMP =  {
     'id': '',
     'task': '',
+    'context': '',
+    'application': '',
     'priority': 0,
     'status': 'todo',
     'issue': '',
@@ -43,10 +45,10 @@ LOG_TEMP =  {
 }
 
 TIME_FIELD_KEYS = ['created', 'updated', 'scheduled']
-STR_FIELD_KEYS = ['id', 'task', 'status', 'issue', 'note']
+STR_FIELD_KEYS = ['id', 'task', 'status', 'issue', 'note', 'context', 'application']
 INT_FIELD_KEYS = ['priority']
 READ_ONLY_KEYS = ['id', 'created', 'updated']
-EDITABLE_KEYS = ['task', 'priority', 'status', 'issue', 'scheduled', 'note']
+EDITABLE_KEYS = ['task', 'priority', 'status', 'issue', 'scheduled', 'note', 'context', 'application']
 
 
 def str_presenter(dumper, data):
@@ -77,7 +79,7 @@ def simple_note():
 
     conn = create_connection()
 
-    # check if the worklog table exist 
+    # check if the worklog table exist
     check_log_table(conn)
 
     # default filter is scheduled today
@@ -153,6 +155,8 @@ def check_log_table(conn):
             CREATE TABLE WORKLOG(
                 ID NVARCHAR(32) NOT NULL,
                 TASK NVARCHAR(255) NOT NULL,
+                CONTEXT TEXT(500),
+                APPLICATION TEXT(500),
                 PRIORITY TINYINT,
                 STATUS VARCHAR(25),
                 ISSUE VARCHAR(25),
@@ -162,7 +166,7 @@ def check_log_table(conn):
                 NOTE TEXT(1000)
             )
         """
-        try: 
+        try:
             cur = conn.cursor()
             cur.execute(sql_create)
         except sqlite3.Error as e:
@@ -171,14 +175,14 @@ def check_log_table(conn):
         finally:
             if cur:
                 cur.close()
-    else: 
+    else:
         return
 
 
 def get_log(conn, **kwargs):
     filter = kwargs['filter']
-    filter_parsed = parse_filter(filter) 
-    fields = ['id', 'task', 'issue', 'priority', 'status', 'scheduled', 'created', 'updated', 'note']
+    filter_parsed = parse_filter(filter)
+    fields = ['id', 'task', 'context', 'application', 'issue', 'priority', 'status', 'scheduled', 'created', 'updated', 'note']
 
     verbose = kwargs['verbose']
 
@@ -194,7 +198,7 @@ def get_log(conn, **kwargs):
     sql_get = f"SELECT {','.join(display_fields)} FROM WORKLOG {filter_parsed}"
 
     try:
-        conn.row_factory = dict_factory 
+        conn.row_factory = dict_factory
         cur = conn.cursor()
         result = cur.execute(sql_get).fetchall()
 
@@ -238,7 +242,7 @@ def display_log(result, output_format, filter):
             output.append(','.join([str(i) for i in item.values()]))
         print('\n'.join(output))
 
-    elif output_format == 'table': 
+    elif output_format == 'table':
         table = Table(title=f'Tasks table filtered by {filter}')
 
         for col in result[0].keys():
@@ -253,7 +257,7 @@ def display_log(result, output_format, filter):
                     item[key] = item[key][0:10] + '...'
                 row.append(str(item[key]))
             table.add_row(*row)
-        
+
         console = Console()
         console.print(table)
 
@@ -275,12 +279,12 @@ def display_log(result, output_format, filter):
             subprocess.call([editor, '-R', tmp.name])
 
         # the tmp log can be safely removed here
-        try: 
+        try:
             os.remove(log_name)
         except Exception as e:
             print(e)
 
-    elif output_format == 'standup': 
+    elif output_format == 'standup':
         entry_by_date = {}
         for item in result:
             row = []
@@ -347,7 +351,7 @@ def add_log(conn):
         new_log = tmp_r.read()
 
     # the tmp log can be safely removed here
-    try: 
+    try:
         new_entries = yaml.safe_load(new_log)
         os.remove(log_name)
     except Exception as e:
@@ -359,10 +363,12 @@ def add_log(conn):
     # assign unique id and assign timestamp to log entry
     for entry in new_entries:
         entry['id'] = str(uuid.uuid4())[:32]
+        entry['context'] = entry['context'].rstrip().replace("'", "\'")
+        entry['application'] = entry['application'].rstrip().replace("'", "\'")
         entry['created'] = int(time.time())
         entry['updated'] = int(time.time())
         # strip trailing new lines
-        entry['note'] = entry['note'].rstrip()
+        entry['note'] = entry['note'].rstrip().replace("'", "\'")
         try:
             entry['scheduled'] = int(datetime.strptime(entry['scheduled'], '%Y-%m-%d %H:%M:%S').timestamp())
         except Exception as e:
@@ -375,7 +381,7 @@ def add_log(conn):
     print(f'{len(records)} record(s) added to worklog.')
     try:
         cur = conn.cursor()
-        sql_insert = 'INSERT INTO WORKLOG VALUES(?,?,?,?,?,?,?,?,?);'
+        sql_insert = 'INSERT INTO WORKLOG VALUES(?,?,?,?,?,?,?,?,?,?,?);'
         cur.executemany(sql_insert, records)
         conn.commit()
     except sqlite3.Error as e:
@@ -384,7 +390,7 @@ def add_log(conn):
     finally:
         if cur:
             cur.close()
-            
+
 
 def delete_log(id, conn):
     # test for id length
@@ -442,7 +448,7 @@ def edit_log(conn, **kwargs):
             updated_log = tmp_r.read()
 
         # the tmp log can be safely removed here
-        try: 
+        try:
             update_entries = yaml.safe_load(updated_log)
             os.remove(log_name)
         except Exception as e:
@@ -463,7 +469,8 @@ def edit_log(conn, **kwargs):
                 elif k in TIME_FIELD_KEYS:
                     entry[k.upper()] = int(datetime.strptime(entry[k.upper()], '%Y-%m-%d %H:%M:%S').timestamp())
                 elif k in STR_FIELD_KEYS:
-                    entry[k.upper()] = "'" + entry[k.upper()] + "'"
+                    entry[k.upper()] = "'" + entry[k.upper()].replace("'", "\'") + "'"
+                    print(entry[k.upper()])
 
                 update_fields.append(f' {k.upper()} = {entry[k.upper()]}')
 
@@ -491,7 +498,7 @@ def parse_filter(filter):
     for section in sections:
         filter_field = re.search('.*(?=\:)', section).group(0).strip()
         filter_query = re.search('(?<=\:).*', section).group(0).strip()
- 
+
         if filter_field.lower() in LOG_TEMP.keys():
             if 'range' in filter_query:
                 # add timefilter query
@@ -520,7 +527,7 @@ def parse_timefilter(query, **kwargs):
     else:
         ts['now'] = datetime.now()
 
-    # populate timeset 
+    # populate timeset
     ts['start_of_today'] = datetime(
         year = ts['now'].year,
         month = ts['now'].month,
